@@ -1,4 +1,320 @@
-use std::fs;
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::Path,
+};
+#[cfg(test)]
+#[path = "render_tests.rs"]
+mod tests;
+pub const CAMERA_Z: f64 = 5.0;
+pub const NEAR: f64 = 0.1;
+pub const BASE_COLOR: u32 = 0x87CEEB;
+
+pub struct Mesh {
+    pub vertices: Vec<Vec3>,
+    pub faces: Vec<(usize, usize, usize)>,
+    pub face_materials: Vec<Option<String>>,
+    pub materials: HashMap<String, u32>,
+}
+impl Mesh {
+    pub fn from_obj(path: &str) -> Result<Self, String> {
+        let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let mut mesh = Self {
+            vertices: vec![],
+            faces: vec![],
+            face_materials: vec![],
+            materials: HashMap::new(),
+        };
+        let mut material = None;
+        let mut seen = HashSet::new();
+        for line in text.lines() {
+            let mut tokens = line.split('#').next().unwrap_or("").split_whitespace();
+            match tokens.next() {
+                Some("v") => {
+                    let v = tokens
+                        .take(3)
+                        .map(str::parse::<f64>)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| e.to_string())?;
+                    if v.len() != 3 || v.iter().any(|x| !x.is_finite()) {
+                        return Err("Vertice invalido".into());
+                    }
+                    mesh.vertices.push(Vec3::new(v[0], v[1], v[2]));
+                }
+                Some("mtllib") => {
+                    for name in tokens {
+                        let file = Path::new(path)
+                            .parent()
+                            .unwrap_or(Path::new("."))
+                            .join(name);
+                        let mtl = fs::read_to_string(&file)
+                            .map_err(|e| format!("{}: {e}", file.display()))?;
+                        let mut name = String::new();
+                        for line in mtl.lines() {
+                            let mut parts = line.split('#').next().unwrap_or("").split_whitespace();
+                            match parts.next() {
+                                Some("newmtl") => name = parts.collect::<Vec<_>>().join(" "),
+                                Some("Kd") => {
+                                    let rgb = parts
+                                        .take(3)
+                                        .map(str::parse::<f64>)
+                                        .collect::<Result<Vec<_>, _>>()
+                                        .map_err(|e| e.to_string())?;
+                                    if rgb.len() != 3 || rgb.iter().any(|x| !x.is_finite()) {
+                                        return Err("Kd invalido".into());
+                                    }
+                                    let c =
+                                        |i: usize| (rgb[i].clamp(0.0, 1.0) * 255.0).round() as u32;
+                                    mesh.materials
+                                        .insert(name.clone(), c(0) << 16 | c(1) << 8 | c(2));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Some("usemtl") => material = Some(tokens.collect::<Vec<_>>().join(" ")),
+                Some("f") => {
+                    let ids = tokens
+                        .map(|t| {
+                            let n = t
+                                .split('/')
+                                .next()
+                                .unwrap_or("")
+                                .parse::<isize>()
+                                .map_err(|e| e.to_string())?;
+                            let i = if n < 0 {
+                                mesh.vertices.len() as isize + n
+                            } else {
+                                n - 1
+                            };
+                            if n == 0 || i < 0 || i as usize >= mesh.vertices.len() {
+                                return Err("Indice fuera de rango".to_string());
+                            }
+                            Ok(i as usize)
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    // El modelo ya esta triangulado: no crear abanicos ambiguos para caras concavas.
+                    if ids.len() != 3 {
+                        return Err("El OBJ debe estar triangulado".into());
+                    }
+                    let mut key = ids
+                        .iter()
+                        .map(|&i| {
+                            let v = mesh.vertices[i];
+                            [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]
+                        })
+                        .collect::<Vec<_>>();
+                    key.sort();
+                    if seen.insert((key, material.clone())) {
+                        mesh.faces.push((ids[0], ids[1], ids[2]));
+                        mesh.face_materials.push(material.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(mesh)
+    }
+    pub fn get_triangles(&self) -> Vec<Triangle> {
+        self.faces
+            .iter()
+            .enumerate()
+            .map(|(i, &(a, b, c))| {
+                Triangle::new(
+                    self.vertices[a],
+                    self.vertices[b],
+                    self.vertices[c],
+                    self.face_materials[i]
+                        .as_ref()
+                        .and_then(|n| self.materials.get(n))
+                        .copied()
+                        .unwrap_or(BASE_COLOR),
+                )
+            })
+            .collect()
+    }
+    pub fn calcular_centro(&self) -> Vec3 {
+        let sum = self
+            .vertices
+            .iter()
+            .fold(Vec3::new(0.0, 0.0, 0.0), |a, &b| a.add(b));
+        scale(sum, 1.0 / self.vertices.len().max(1) as f64)
+    }
+    pub fn calcular_radio_max(&self, center: Vec3) -> f64 {
+        self.vertices
+            .iter()
+            .map(|v| v.sub(center).length())
+            .fold(0.0, f64::max)
+    }
+}
+fn scale(v: Vec3, s: f64) -> Vec3 {
+    Vec3::new(v.x * s, v.y * s, v.z * s)
+}
+fn recortar(t: &Triangle) -> Vec<Vec3> {
+    let input = [t.v1, t.v2, t.v3];
+    if input
+        .iter()
+        .any(|v| !v.x.is_finite() || !v.y.is_finite() || !v.z.is_finite())
+    {
+        return vec![];
+    }
+    let mut out = vec![];
+    for i in 0..3 {
+        let a = input[i];
+        let b = input[(i + 1) % 3];
+        let ia = CAMERA_Z - a.z >= NEAR;
+        let ib = CAMERA_Z - b.z >= NEAR;
+        if ia {
+            out.push(a);
+        }
+        if ia != ib {
+            let mut v = a.add(scale(b.sub(a), (CAMERA_Z - NEAR - a.z) / (b.z - a.z)));
+            v.z = CAMERA_Z - NEAR;
+            out.push(v);
+        }
+    }
+    out
+}
+fn proyectar(v: Vec3, s: f64, ox: f64, oy: f64) -> (f64, f64, f64) {
+    let q = 1.0 / (CAMERA_Z - v.z);
+    (v.x * CAMERA_Z * q * s + ox, -v.y * CAMERA_Z * q * s + oy, q)
+}
+pub fn dibujar_triangulo(buffer: &mut [u32], width: usize, t: &Triangle, s: f64, ox: f64, oy: f64) {
+    if width == 0 {
+        return;
+    }
+    let height = buffer.len() / width;
+    let polygon = recortar(t);
+    for i in 0..polygon.len() {
+        let a = proyectar(polygon[i], s, ox, oy);
+        let b = proyectar(polygon[(i + 1) % polygon.len()], s, ox, oy);
+        if ![a.0, a.1, b.0, b.1].iter().all(|v| v.is_finite()) {
+            continue;
+        }
+        let dx = b.0 - a.0;
+        let dy = b.1 - a.1;
+        let mut lo: f64 = 0.0;
+        let mut hi: f64 = 1.0;
+        // Liang-Barsky limita el recorrido al area visible.
+        for (p, q) in [
+            (-dx, a.0),
+            (dx, width as f64 - 1.0 - a.0),
+            (-dy, a.1),
+            (dy, height as f64 - 1.0 - a.1),
+        ] {
+            if p == 0.0 {
+                if q < 0.0 {
+                    hi = -1.0;
+                }
+            } else if p < 0.0 {
+                lo = lo.max(q / p);
+            } else {
+                hi = hi.min(q / p);
+            }
+        }
+        if lo > hi {
+            continue;
+        }
+        let steps = (dx * (hi - lo)).abs().max((dy * (hi - lo)).abs()).ceil() as usize;
+        for step in 0..=steps {
+            let u = lo + (hi - lo) * step as f64 / steps.max(1) as f64;
+            let x = (a.0 + dx * u).round() as isize;
+            let y = (a.1 + dy * u).round() as isize;
+            if x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height {
+                buffer[y as usize * width + x as usize] = t.color;
+            }
+        }
+    }
+}
+pub fn dibujar_triangulo_relleno(
+    buffer: &mut [u32],
+    depth: &mut [f64],
+    width: usize,
+    height: usize,
+    t: &Triangle,
+    s: f64,
+    ox: f64,
+    oy: f64,
+) {
+    if width == 0
+        || height == 0
+        || width
+            .checked_mul(height)
+            .is_none_or(|n| n > buffer.len() || n > depth.len())
+    {
+        return;
+    }
+    let polygon = recortar(t);
+    for i in 1..polygon.len().saturating_sub(1) {
+        let p = [polygon[0], polygon[i], polygon[i + 1]].map(|v| proyectar(v, s, ox, oy));
+        if p.iter()
+            .any(|v| !v.0.is_finite() || !v.1.is_finite() || !v.2.is_finite())
+        {
+            continue;
+        }
+        let edge = |a: (f64, f64, f64), b: (f64, f64, f64), x: f64, y: f64| {
+            (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0)
+        };
+        let area = edge(p[0], p[1], p[2].0, p[2].1);
+        if !area.is_finite() || area.abs() < 1e-10 {
+            continue;
+        }
+        let minx = p
+            .iter()
+            .map(|v| v.0)
+            .fold(f64::INFINITY, f64::min)
+            .floor()
+            .max(0.0);
+        let maxx = p
+            .iter()
+            .map(|v| v.0)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil()
+            .min(width as f64 - 1.0);
+        let miny = p
+            .iter()
+            .map(|v| v.1)
+            .fold(f64::INFINITY, f64::min)
+            .floor()
+            .max(0.0);
+        let maxy = p
+            .iter()
+            .map(|v| v.1)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil()
+            .min(height as f64 - 1.0);
+        if minx > maxx || miny > maxy {
+            continue;
+        }
+        for y in miny as usize..=maxy as usize {
+            for x in minx as usize..=maxx as usize {
+                let w = [
+                    edge(p[1], p[2], x as f64 + 0.5, y as f64 + 0.5) / area,
+                    edge(p[2], p[0], x as f64 + 0.5, y as f64 + 0.5) / area,
+                    edge(p[0], p[1], x as f64 + 0.5, y as f64 + 0.5) / area,
+                ];
+                if w.iter().any(|v| *v < 0.0) {
+                    continue;
+                }
+                // 1/(5-z) es afin en pantalla; interpolar z directamente seria incorrecto.
+                let q = w[0] * p[0].2 + w[1] * p[1].2 + w[2] * p[2].2;
+                let index = y * width + x;
+                if q > depth[index] {
+                    depth[index] = q;
+                    buffer[index] = t.color;
+                }
+            }
+        }
+    }
+}
+pub fn iluminar(color: u32, a: Vec3, b: Vec3, c: Vec3) -> u32 {
+    let n = b.sub(a).cross(c.sub(a)).normalize();
+    let intensity = 0.3 + 0.7 * n.dot(Vec3::new(0.3, 0.5, 1.0).normalize()).abs();
+    let channel =
+        |shift: u32| ((((color >> shift) & 255u32) as f64 * intensity).round() as u32) << shift;
+    channel(16) | channel(8) | channel(0)
+}
 
 pub const WINDOW_WIDTH: usize = 800;
 pub const WINDOW_HEIGHT: usize = 600;
@@ -65,251 +381,5 @@ pub struct Triangle {
 impl Triangle {
     pub fn new(v1: Vec3, v2: Vec3, v3: Vec3, color: u32) -> Self {
         Triangle { v1, v2, v3, color }
-    }
-}
-
-pub struct Mesh {
-    pub vertices: Vec<Vec3>,
-    pub faces: Vec<(usize, usize, usize)>,
-}
-
-impl Mesh {
-    pub fn new() -> Self {
-        Mesh {
-            vertices: Vec::new(),
-            faces: Vec::new(),
-        }
-    }
-    pub fn add_vertex(&mut self, v: Vec3) -> usize {
-        self.vertices.push(v);
-        self.vertices.len() - 1
-    }
-    pub fn add_face(&mut self, i1: usize, i2: usize, i3: usize) {
-        self.faces.push((i1, i2, i3));
-    }
-    pub fn get_triangles(&self) -> Vec<Triangle> {
-        let mut triangles = Vec::new();
-        for &(i1, i2, i3) in &self.faces {
-            let v1 = self.vertices[i1];
-            let v2 = self.vertices[i2];
-            let v3 = self.vertices[i3];
-            let color = 0x00FF00;
-            triangles.push(Triangle::new(v1, v2, v3, color));
-        }
-        triangles
-    }
-
-    pub fn from_obj(path: &str) -> Result<Mesh, String> {
-        let contenido = fs::read_to_string(path)
-            .map_err(|e| format!("No se pudo leer el archivo {}: {}", path, e))?;
-
-        let mut vertices: Vec<Vec3> = Vec::new();
-        let mut faces: Vec<(usize, usize, usize)> = Vec::new();
-
-        for linea in contenido.lines() {
-            let linea = linea.trim();
-            if linea.is_empty() || linea.starts_with('#') {
-                continue;
-            }
-
-            let mut partes = linea.split_whitespace();
-            let etiqueta = partes.next().unwrap_or("");
-
-            match etiqueta {
-                "v" => {
-                    let x: f64 = partes.next()
-                        .ok_or("Vértice incompleto: falta x")?
-                        .parse()
-                        .map_err(|e| format!("Error parseando x de vértice: {}", e))?;
-                    let y: f64 = partes.next()
-                        .ok_or("Vértice incompleto: falta y")?
-                        .parse()
-                        .map_err(|e| format!("Error parseando y de vértice: {}", e))?;
-                    let z: f64 = partes.next()
-                        .ok_or("Vértice incompleto: falta z")?
-                        .parse()
-                        .map_err(|e| format!("Error parseando z de vértice: {}", e))?;
-                    vertices.push(Vec3::new(x, y, z));
-                }
-                "f" => {
-                    let mut indices: Vec<usize> = Vec::new();
-                    for token in partes {
-                        // El formato de las caras puede ser: v, v/vt, v//vn, o v/vt/vn
-                        // Tomamos solo el primer número (índice de vértice, 1-based en OBJ)
-                        let vertice_str = token.split('/').next()
-                            .ok_or("Cara con token vacío")?;
-                        let idx: usize = vertice_str.parse()
-                            .map_err(|e| format!("Error parseando índice de cara: {}", e))?;
-                        // OBJ usa índices 1-based, convertimos a 0-based
-                        if idx == 0 {
-                            return Err("Índice de vértice 0 no válido en OBJ".to_string());
-                        }
-                        indices.push(idx - 1);
-                    }
-
-                    // Triangulación por abanico para polígonos con más de 3 vértices
-                    if indices.len() >= 3 {
-                        for i in 1..(indices.len() - 1) {
-                            faces.push((indices[0], indices[i], indices[i + 1]));
-                        }
-                    }
-                }
-                _ => {} // Ignorar otras líneas (vt, vn, mtllib, usemtl, o, s, etc.)
-            }
-        }
-
-        // Validar que todos los índices de cara estén dentro de rango
-        for &(i1, i2, i3) in &faces {
-            if i1 >= vertices.len() || i2 >= vertices.len() || i3 >= vertices.len() {
-                return Err(format!(
-                    "Cara con índices fuera de rango: {}, {}, {} (vertices: {})",
-                    i1, i2, i3, vertices.len()
-                ));
-            }
-        }
-
-        Ok(Mesh { vertices, faces })
-    }
-
-    /// Calcula el centro geométrico del mesh
-    pub fn calcular_centro(&self) -> Vec3 {
-        if self.vertices.is_empty() {
-            return Vec3::new(0.0, 0.0, 0.0);
-        }
-        let mut suma = Vec3::new(0.0, 0.0, 0.0);
-        for v in &self.vertices {
-            suma = suma.add(*v);
-        }
-        let n = self.vertices.len() as f64;
-        Vec3::new(suma.x / n, suma.y / n, suma.z / n)
-    }
-
-    /// Calcula el radio máximo desde el centro (para escalado uniforme)
-    pub fn calcular_radio_max(&self, centro: Vec3) -> f64 {
-        let mut max_dist = 0.0;
-        for v in &self.vertices {
-            let d = v.sub(centro).length();
-            if d > max_dist {
-                max_dist = d;
-            }
-        }
-        max_dist
-    }
-}
-
-pub fn crear_cubo() -> Mesh {
-    let mut mesh = Mesh::new();
-    let v0 = mesh.add_vertex(Vec3::new(-1.0, -1.0, -1.0));
-    let v1 = mesh.add_vertex(Vec3::new(1.0, -1.0, -1.0));
-    let v2 = mesh.add_vertex(Vec3::new(1.0, 1.0, -1.0));
-    let v3 = mesh.add_vertex(Vec3::new(-1.0, 1.0, -1.0));
-    let v4 = mesh.add_vertex(Vec3::new(-1.0, -1.0, 1.0));
-    let v5 = mesh.add_vertex(Vec3::new(1.0, -1.0, 1.0));
-    let v6 = mesh.add_vertex(Vec3::new(1.0, 1.0, 1.0));
-    let v7 = mesh.add_vertex(Vec3::new(-1.0, 1.0, 1.0));
-    mesh.add_face(v0, v1, v2);
-    mesh.add_face(v2, v3, v0);
-    mesh.add_face(v4, v7, v6);
-    mesh.add_face(v6, v5, v4);
-    mesh.add_face(v0, v4, v7);
-    mesh.add_face(v7, v3, v0);
-    mesh.add_face(v1, v5, v6);
-    mesh.add_face(v6, v2, v1);
-    mesh.add_face(v0, v5, v1);
-    mesh.add_face(v4, v0, v5);
-    mesh.add_face(v3, v2, v6);
-    mesh.add_face(v6, v7, v3);
-    mesh
-}
-
-pub fn proyectar(v: Vec3, escala: f64, offset_x: f64, offset_y: f64) -> (i32, i32) {
-    let cam_z = 5.0;
-    let factor = cam_z / (cam_z - v.z);
-    let x = (v.x * factor * escala + offset_x) as i32;
-    let y = (-v.y * factor * escala + offset_y) as i32;
-    (x, y)
-}
-
-pub fn dibujar_linea(buffer: &mut [u32], width: usize, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    let mut x0 = x0;
-    let mut y0 = y0;
-    let dx = (x1 - x0).abs();
-    let dy = (y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx - dy;
-    loop {
-        if x0 >= 0 && x0 < width as i32 && y0 >= 0 && y0 < WINDOW_HEIGHT as i32 {
-            buffer[y0 as usize * width + x0 as usize] = color;
-        }
-        if x0 == x1 && y0 == y1 {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 > -dy {
-            err -= dy;
-            x0 += sx;
-        }
-        if e2 < dx {
-            err += dx;
-            y0 += sy;
-        }
-    }
-}
-
-pub fn dibujar_triangulo(
-    buffer: &mut [u32],
-    width: usize,
-    t: &Triangle,
-    escala: f64,
-    offset_x: f64,
-    offset_y: f64,
-) {
-    let (x1, y1) = proyectar(t.v1, escala, offset_x, offset_y);
-    let (x2, y2) = proyectar(t.v2, escala, offset_x, offset_y);
-    let (x3, y3) = proyectar(t.v3, escala, offset_x, offset_y);
-    dibujar_linea(buffer, width, x1, y1, x2, y2, t.color);
-    dibujar_linea(buffer, width, x2, y2, x3, y3, t.color);
-    dibujar_linea(buffer, width, x3, y3, x1, y1, t.color);
-}
-
-/// Dibuja un triángulo relleno usando edge functions (rasterización por coordenadas baricéntricas)
-pub fn dibujar_triangulo_relleno(
-    buffer: &mut [u32],
-    width: usize,
-    height: usize,
-    t: &Triangle,
-    escala: f64,
-    offset_x: f64,
-    offset_y: f64,
-) {
-    let (x1, y1) = proyectar(t.v1, escala, offset_x, offset_y);
-    let (x2, y2) = proyectar(t.v2, escala, offset_x, offset_y);
-    let (x3, y3) = proyectar(t.v3, escala, offset_x, offset_y);
-
-    // Bounding box del triángulo (clampado a los límites del buffer)
-    let min_x = x1.min(x2).min(x3).max(0) as usize;
-    let max_x = x1.max(x2).max(x3).min(width as i32 - 1) as usize;
-    let min_y = y1.min(y2).min(y3).max(0) as usize;
-    let max_y = y1.max(y2).max(y3).min(height as i32 - 1) as usize;
-
-    // Edge function: cross product 2D para determinar si un punto está dentro del triángulo
-    let edge = |p0x: i32, p0y: i32, p1x: i32, p1y: i32, px: i32, py: i32| -> i32 {
-        (p1x - p0x) * (py - p0y) - (p1y - p0y) * (px - p0x)
-    };
-
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let px = x as i32;
-            let py = y as i32;
-            let e1 = edge(x1, y1, x2, y2, px, py);
-            let e2 = edge(x2, y2, x3, y3, px, py);
-            let e3 = edge(x3, y3, x1, y1, px, py);
-
-            // El punto está dentro si todas las edge functions tienen el mismo signo
-            if (e1 >= 0 && e2 >= 0 && e3 >= 0) || (e1 <= 0 && e2 <= 0 && e3 <= 0) {
-                buffer[y * width + x] = t.color;
-            }
-        }
     }
 }

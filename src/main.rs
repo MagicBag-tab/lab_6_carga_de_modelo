@@ -15,10 +15,6 @@ enum ModoVista {
     Pintado,
 }
 
-fn color_por_indice(_i: usize) -> u32 {
-    0x87CEEB
-}
-
 fn main() {
     let mut ventana = Window::new(
         "Modelo 3D - Nave desde OBJ [AUTO][ESQUELETO]",
@@ -28,10 +24,13 @@ fn main() {
     )
     .unwrap();
 
-    let mesh = Mesh::from_obj("assets/nave_1.obj")
-        .expect("No se pudo cargar assets/nave_1.obj");
+    let mesh = Mesh::from_obj("assets/nave_1.obj").expect("No se pudo cargar assets/nave_1.obj");
 
-    println!("Modelo cargado: {} vértices, {} caras", mesh.vertices.len(), mesh.faces.len());
+    println!(
+        "Modelo cargado: {} vértices, {} caras",
+        mesh.vertices.len(),
+        mesh.faces.len()
+    );
     println!("Controles:");
     println!("  ESPACIO  - Cambiar entre modo automático y manual");
     println!("  T        - Cambiar entre esqueleto y pintado");
@@ -42,6 +41,7 @@ fn main() {
     let centro = mesh.calcular_centro();
     let radio_max = mesh.calcular_radio_max(centro);
 
+    assert!(radio_max > 0.0, "El modelo no tiene volumen renderizable");
     let escala = (WINDOW_WIDTH as f64 * 0.75) / radio_max;
     let offset_x = WINDOW_WIDTH as f64 / 2.0;
     let offset_y = WINDOW_HEIGHT as f64 / 2.0;
@@ -52,6 +52,10 @@ fn main() {
     let mut modo_vista = ModoVista::Esqueleto;
     let mut angulo_y = 0.0f64;
     let mut angulo_x = 0.0f64;
+
+    let mut buffer = vec![0u32; WINDOW_WIDTH * WINDOW_HEIGHT];
+    let mut depth = vec![0.0; WINDOW_WIDTH * WINDOW_HEIGHT];
+    let triangles = mesh.get_triangles();
 
     while ventana.is_open() && !ventana.is_key_down(Key::Escape) {
         if ventana.is_key_down(Key::Space) {
@@ -109,7 +113,7 @@ fn main() {
             etiqueta_giro, etiqueta_vista
         ));
 
-        let mut buffer = vec![0u32; WINDOW_WIDTH * WINDOW_HEIGHT];
+        depth.fill(0.0);
         for pixel in buffer.iter_mut() {
             *pixel = 0x1A1A1A;
         }
@@ -119,17 +123,13 @@ fn main() {
         let cos_x = angulo_x.cos();
         let sin_x = angulo_x.sin();
 
-        for (i, tri) in mesh.get_triangles().iter().enumerate() {
+        for tri in &triangles {
             let v1_centrado = tri.v1.sub(centro);
             let v2_centrado = tri.v2.sub(centro);
             let v3_centrado = tri.v3.sub(centro);
 
             let rotar_y = |v: Vec3| -> Vec3 {
-                Vec3::new(
-                    v.x * cos_y + v.z * sin_y,
-                    v.y,
-                    -v.x * sin_y + v.z * cos_y,
-                )
+                Vec3::new(v.x * cos_y + v.z * sin_y, v.y, -v.x * sin_y + v.z * cos_y)
             };
 
             let v1_y = rotar_y(v1_centrado);
@@ -137,11 +137,7 @@ fn main() {
             let v3_y = rotar_y(v3_centrado);
 
             let rotar_x = |v: Vec3| -> Vec3 {
-                Vec3::new(
-                    v.x,
-                    v.y * cos_x - v.z * sin_x,
-                    v.y * sin_x + v.z * cos_x,
-                )
+                Vec3::new(v.x, v.y * cos_x - v.z * sin_x, v.y * sin_x + v.z * cos_x)
             };
 
             let v1_rot = rotar_x(v1_y);
@@ -153,7 +149,7 @@ fn main() {
             let v3_final = Vec3::new(v3_rot.x, v3_rot.y, v3_rot.z - distancia_z);
 
             let color = if modo_vista == ModoVista::Pintado {
-                color_por_indice(i)
+                iluminar(tri.color, v1_final, v2_final, v3_final)
             } else {
                 tri.color
             };
@@ -161,11 +157,19 @@ fn main() {
 
             match modo_vista {
                 ModoVista::Esqueleto => {
-                    dibujar_triangulo(&mut buffer, WINDOW_WIDTH, &t_rotado, escala, offset_x, offset_y);
+                    dibujar_triangulo(
+                        &mut buffer,
+                        WINDOW_WIDTH,
+                        &t_rotado,
+                        escala,
+                        offset_x,
+                        offset_y,
+                    );
                 }
                 ModoVista::Pintado => {
                     dibujar_triangulo_relleno(
                         &mut buffer,
+                        &mut depth,
                         WINDOW_WIDTH,
                         WINDOW_HEIGHT,
                         &t_rotado,
