@@ -1,3 +1,5 @@
+use std::fs;
+
 pub const WINDOW_WIDTH: usize = 800;
 pub const WINDOW_HEIGHT: usize = 600;
 
@@ -95,6 +97,103 @@ impl Mesh {
             triangles.push(Triangle::new(v1, v2, v3, color));
         }
         triangles
+    }
+
+    pub fn from_obj(path: &str) -> Result<Mesh, String> {
+        let contenido = fs::read_to_string(path)
+            .map_err(|e| format!("No se pudo leer el archivo {}: {}", path, e))?;
+
+        let mut vertices: Vec<Vec3> = Vec::new();
+        let mut faces: Vec<(usize, usize, usize)> = Vec::new();
+
+        for linea in contenido.lines() {
+            let linea = linea.trim();
+            if linea.is_empty() || linea.starts_with('#') {
+                continue;
+            }
+
+            let mut partes = linea.split_whitespace();
+            let etiqueta = partes.next().unwrap_or("");
+
+            match etiqueta {
+                "v" => {
+                    let x: f64 = partes.next()
+                        .ok_or("Vértice incompleto: falta x")?
+                        .parse()
+                        .map_err(|e| format!("Error parseando x de vértice: {}", e))?;
+                    let y: f64 = partes.next()
+                        .ok_or("Vértice incompleto: falta y")?
+                        .parse()
+                        .map_err(|e| format!("Error parseando y de vértice: {}", e))?;
+                    let z: f64 = partes.next()
+                        .ok_or("Vértice incompleto: falta z")?
+                        .parse()
+                        .map_err(|e| format!("Error parseando z de vértice: {}", e))?;
+                    vertices.push(Vec3::new(x, y, z));
+                }
+                "f" => {
+                    let mut indices: Vec<usize> = Vec::new();
+                    for token in partes {
+                        // El formato de las caras puede ser: v, v/vt, v//vn, o v/vt/vn
+                        // Tomamos solo el primer número (índice de vértice, 1-based en OBJ)
+                        let vertice_str = token.split('/').next()
+                            .ok_or("Cara con token vacío")?;
+                        let idx: usize = vertice_str.parse()
+                            .map_err(|e| format!("Error parseando índice de cara: {}", e))?;
+                        // OBJ usa índices 1-based, convertimos a 0-based
+                        if idx == 0 {
+                            return Err("Índice de vértice 0 no válido en OBJ".to_string());
+                        }
+                        indices.push(idx - 1);
+                    }
+
+                    // Triangulación por abanico para polígonos con más de 3 vértices
+                    if indices.len() >= 3 {
+                        for i in 1..(indices.len() - 1) {
+                            faces.push((indices[0], indices[i], indices[i + 1]));
+                        }
+                    }
+                }
+                _ => {} // Ignorar otras líneas (vt, vn, mtllib, usemtl, o, s, etc.)
+            }
+        }
+
+        // Validar que todos los índices de cara estén dentro de rango
+        for &(i1, i2, i3) in &faces {
+            if i1 >= vertices.len() || i2 >= vertices.len() || i3 >= vertices.len() {
+                return Err(format!(
+                    "Cara con índices fuera de rango: {}, {}, {} (vertices: {})",
+                    i1, i2, i3, vertices.len()
+                ));
+            }
+        }
+
+        Ok(Mesh { vertices, faces })
+    }
+
+    /// Calcula el centro geométrico del mesh
+    pub fn calcular_centro(&self) -> Vec3 {
+        if self.vertices.is_empty() {
+            return Vec3::new(0.0, 0.0, 0.0);
+        }
+        let mut suma = Vec3::new(0.0, 0.0, 0.0);
+        for v in &self.vertices {
+            suma = suma.add(*v);
+        }
+        let n = self.vertices.len() as f64;
+        Vec3::new(suma.x / n, suma.y / n, suma.z / n)
+    }
+
+    /// Calcula el radio máximo desde el centro (para escalado uniforme)
+    pub fn calcular_radio_max(&self, centro: Vec3) -> f64 {
+        let mut max_dist = 0.0;
+        for v in &self.vertices {
+            let d = v.sub(centro).length();
+            if d > max_dist {
+                max_dist = d;
+            }
+        }
+        max_dist
     }
 }
 
