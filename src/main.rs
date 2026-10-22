@@ -15,14 +15,9 @@ enum ModoVista {
     Pintado,
 }
 
-fn color_por_indice(i: usize) -> u32 {
-    // Solo 3 colores para que la estructura de la nave se entienda sin saturar
-    let colores = [
-        0x00FF00, // Verde (cuerpo principal)
-        0x00AA00, // Verde más oscuro (detalles)
-        0xFFFFFF, // Blanco (acabados)
-    ];
-    colores[i % colores.len()]
+fn color_por_indice(_i: usize) -> u32 {
+    // Un solo color celeste agrisado para todas las caras
+    0x87CEEB // Celeste (Light Sky Blue)
 }
 
 fn main() {
