@@ -56,8 +56,8 @@ fn main() {
     let centro = mesh.calcular_centro();
     let radio_max = mesh.calcular_radio_max(centro);
 
-    // Escala para que el modelo ocupe aproximadamente el 40% del ancho de ventana
-    let escala = (WINDOW_WIDTH as f64 * 0.4) / radio_max;
+    // Escala para que el modelo ocupe aproximadamente el 75% del ancho de ventana
+    let escala = (WINDOW_WIDTH as f64 * 0.75) / radio_max;
     let offset_x = WINDOW_WIDTH as f64 / 2.0;
     let offset_y = WINDOW_HEIGHT as f64 / 2.0;
 
