@@ -272,3 +272,44 @@ pub fn dibujar_triangulo(
     dibujar_linea(buffer, width, x2, y2, x3, y3, t.color);
     dibujar_linea(buffer, width, x3, y3, x1, y1, t.color);
 }
+
+/// Dibuja un triángulo relleno usando edge functions (rasterización por coordenadas baricéntricas)
+pub fn dibujar_triangulo_relleno(
+    buffer: &mut [u32],
+    width: usize,
+    height: usize,
+    t: &Triangle,
+    escala: f64,
+    offset_x: f64,
+    offset_y: f64,
+) {
+    let (x1, y1) = proyectar(t.v1, escala, offset_x, offset_y);
+    let (x2, y2) = proyectar(t.v2, escala, offset_x, offset_y);
+    let (x3, y3) = proyectar(t.v3, escala, offset_x, offset_y);
+
+    // Bounding box del triángulo (clampado a los límites del buffer)
+    let min_x = x1.min(x2).min(x3).max(0) as usize;
+    let max_x = x1.max(x2).max(x3).min(width as i32 - 1) as usize;
+    let min_y = y1.min(y2).min(y3).max(0) as usize;
+    let max_y = y1.max(y2).max(y3).min(height as i32 - 1) as usize;
+
+    // Edge function: cross product 2D para determinar si un punto está dentro del triángulo
+    let edge = |p0x: i32, p0y: i32, p1x: i32, p1y: i32, px: i32, py: i32| -> i32 {
+        (p1x - p0x) * (py - p0y) - (p1y - p0y) * (px - p0x)
+    };
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as i32;
+            let py = y as i32;
+            let e1 = edge(x1, y1, x2, y2, px, py);
+            let e2 = edge(x2, y2, x3, y3, px, py);
+            let e3 = edge(x3, y3, x1, y1, px, py);
+
+            // El punto está dentro si todas las edge functions tienen el mismo signo
+            if (e1 >= 0 && e2 >= 0 && e3 >= 0) || (e1 <= 0 && e2 <= 0 && e3 <= 0) {
+                buffer[y * width + x] = t.color;
+            }
+        }
+    }
+}
