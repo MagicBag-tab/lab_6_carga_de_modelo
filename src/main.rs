@@ -16,17 +16,11 @@ enum ModoVista {
 }
 
 fn color_por_indice(i: usize) -> u32 {
+    // Solo 3 colores para que la estructura de la nave se entienda sin saturar
     let colores = [
-        0xFF0000, // Rojo
-        0x00FF00, // Verde
-        0x0000FF, // Azul
-        0xFFFF00, // Amarillo
-        0xFF00FF, // Magenta
-        0x00FFFF, // Cian
-        0xFFA500, // Naranja
-        0x800080, // Púrpura
-        0x008000, // Verde oscuro
-        0x000080, // Azul oscuro
+        0x00FF00, // Verde (cuerpo principal)
+        0x00AA00, // Verde más oscuro (detalles)
+        0xFFFFFF, // Blanco (acabados)
     ];
     colores[i % colores.len()]
 }
