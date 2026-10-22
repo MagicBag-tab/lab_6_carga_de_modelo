@@ -15,9 +15,19 @@ enum ModoVista {
     Pintado,
 }
 
-fn color_por_indice(_i: usize) -> u32 {
-    // Un solo color celeste agrisado para todas las caras
-    0x87CEEB // Celeste (Light Sky Blue)
+/// Determina el color de una cara usando backface culling.
+/// Caras frontales (normales hacia la cámara): celeste claro.
+/// Caras traseras/hundidas (normales lejos de la cámara): celeste más oscuro.
+fn color_para_cara(normal: Vec3, centro: Vec3) -> u32 {
+    // Vector desde el centro de la cara hacia la cámara (en el origen)
+    let vista = Vec3::new(0.0, 0.0, 0.0).sub(centro);
+    // Producto punto: si es positivo, el normal apunta hacia la cámara (cara frontal)
+    let dp = normal.dot(vista);
+    if dp > 0.0 {
+        0x87CEEB // Celeste claro (cara frontal visible)
+    } else {
+        0x5E8EA8 // Celeste más oscuro (cara trasera/hundida)
+    }
 }
 
 fn main() {
@@ -167,9 +177,19 @@ fn main() {
             let v2_final = Vec3::new(v2_rot.x, v2_rot.y, v2_rot.z - distancia_z);
             let v3_final = Vec3::new(v3_rot.x, v3_rot.y, v3_rot.z - distancia_z);
 
+            // Calcular normal y centro de la cara para backface culling
+            let e1 = v2_final.sub(v1_final);
+            let e2 = v3_final.sub(v1_final);
+            let normal = e1.cross(e2);
+            let centro = Vec3::new(
+                (v1_final.x + v2_final.x + v3_final.x) / 3.0,
+                (v1_final.y + v2_final.y + v3_final.y) / 3.0,
+                (v1_final.z + v2_final.z + v3_final.z) / 3.0,
+            );
+
             // Asignar color según el modo de vista
             let color = if modo_vista == ModoVista::Pintado {
-                color_por_indice(i)
+                color_para_cara(normal, centro)
             } else {
                 tri.color
             };

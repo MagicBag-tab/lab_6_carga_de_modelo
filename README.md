@@ -31,7 +31,7 @@ El código fuente completo está disponible en:
 
 ## Modelo renderizado
 
-A continuación se muestra el modelo (`assets/nave_1.obj`) renderizado en modo **Esqueleto**, centrado en pantalla y con un tamaño razonable (aproximadamente el 75% del ancho de la ventana):
+A continuación se muestra el modelo (`assets/nave_1.obj`) renderizado en modo **Esqueleto**, centrado en pantalla (aproximadamente el 75% del ancho de la ventana):
 
 ![Modelo renderizado en modo Esqueleto](assets/Imagen_Esqueleto.png)
 
